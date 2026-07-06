@@ -1,0 +1,51 @@
+name: smoke-test
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    # Weekly check so upstream image changes that break startup are caught early
+    - cron: "0 8 * * 1"
+  workflow_dispatch:
+
+jobs:
+  lint-script:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Syntax check
+        run: bash -n hermes-podman-setup.sh
+      - name: ShellCheck
+        run: shellcheck hermes-podman-setup.sh
+
+  container-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Pull official image with podman
+        run: podman pull docker.io/nousresearch/hermes-agent:latest
+
+      - name: Prepare minimal data dir
+        run: |
+          mkdir -p "$HOME/.hermes"
+          # Dummy key so the gateway can boot without the interactive wizard.
+          # This validates startup/migrations, not real LLM calls.
+          echo "OPENROUTER_API_KEY=dummy-ci-key" > "$HOME/.hermes/.env"
+
+      - name: Start gateway container
+        run: |
+          podman run -d --name hermes \
+            -v "$HOME/.hermes":/opt/data \
+            -p 127.0.0.1:8642:8642 \
+            docker.io/nousresearch/hermes-agent:latest gateway run
+
+      - name: Container stays alive for 60s
+        run: |
+          sleep 60
+          podman ps --format '{{.Names}} {{.Status}}'
+          state=$(podman inspect -f '{{.State.Status}}' hermes)
+          echo "container state: $state"
+          test "$state" = "running"
+
+      - name: Show logs
+        if: always()
+        run: podman logs hermes || true
