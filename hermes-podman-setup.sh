@@ -37,9 +37,36 @@ HERMES_DATA="$HOME/.hermes"
 HEALTH_URL="http://127.0.0.1:8642/health"
 
 info()  { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
-ok()    { printf '\033[1;32m OK\033[0m %s\n' "$*"; }
-skip()  { printf '\033[1;33mSKIP\033[0m %s\n' "$*"; }
-fail()  { printf '\033[1;31mFAIL\033[0m %s\n' "$*" >&2; exit 1; }
+ok()    { printf '\033[1;32m ✔\033[0m %s\n' "$*"; }
+skip()  { printf '\033[1;33m ↷\033[0m %s (skipped)\n' "$*"; }
+fail()  { printf '\033[1;31m ✘\033[0m %s\n' "$*" >&2; exit 1; }
+
+STEP=0
+TOTAL_STEPS=7
+if [ "$HOST_CONTROL" = 1 ]; then TOTAL_STEPS=8; fi
+step() {
+  STEP=$((STEP + 1))
+  printf '\n\033[1;36m━━━ [%d/%d] %s\033[0m\n' "$STEP" "$TOTAL_STEPS" "$*"
+}
+
+# spin <label> <cmd...> — run a command with a unicode spinner (TTY only).
+# Output is captured; shown only on failure.
+SPIN_LOG=$(mktemp)
+trap 'rm -f "$SPIN_LOG"' EXIT
+spin() {
+  local label=$1; shift
+  if [ ! -t 1 ]; then "$@" >"$SPIN_LOG" 2>&1 || { cat "$SPIN_LOG" >&2; return 1; }; return 0; fi
+  "$@" >"$SPIN_LOG" 2>&1 &
+  local pid=$! frames='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏' i=0
+  while kill -0 "$pid" 2>/dev/null; do
+    printf '\r\033[1;35m%s\033[0m %s' "${frames:$((i % 10)):1}" "$label"
+    i=$((i + 1))
+    sleep 0.1
+  done
+  local rc=0; wait "$pid" || rc=$?
+  printf '\r\033[K'
+  [ "$rc" -eq 0 ] || { cat "$SPIN_LOG" >&2; return "$rc"; }
+}
 
 # --- Uninstall --------------------------------------------------------------
 if [ "$UNINSTALL" = 1 ]; then
@@ -68,7 +95,7 @@ if [ "$UNINSTALL" = 1 ]; then
 fi
 
 # --- 1. Prerequisites ------------------------------------------------------
-info "Checking prerequisites"
+step "Prerequisites"
 
 command -v podman >/dev/null 2>&1 \
   || fail "podman is not installed. Install it first: sudo pacman -S podman"
@@ -85,6 +112,7 @@ else
 fi
 
 # --- 2. Data dir + interactive setup wizard --------------------------------
+step "Data directory & initial config"
 mkdir -p "$HERMES_DATA"
 
 # Repair ownership from earlier runs without keep-id: files created by the
@@ -110,6 +138,7 @@ else
 fi
 
 # --- 3. Quadlet unit --------------------------------------------------------
+step "Quadlet unit"
 mkdir -p "$QUADLET_DIR"
 
 DESIRED_QUADLET=$(cat <<'EOF'
@@ -152,18 +181,16 @@ else
 fi
 
 # --- 4. Start service + enable auto-update timer ---------------------------
-info "Reloading systemd user units"
+step "Service & auto-update timer"
 systemctl --user daemon-reload
 
 if systemctl --user is-active --quiet hermes && [ "$QUADLET_CHANGED" = 0 ]; then
   skip "hermes service already running"
 elif systemctl --user is-active --quiet hermes; then
-  info "Quadlet changed — restarting hermes to apply it"
-  systemctl --user restart hermes
+  spin "Quadlet changed — restarting hermes to apply it" systemctl --user restart hermes
   ok "hermes restarted"
 else
-  info "Starting hermes (first start pulls the image — may take a while)"
-  systemctl --user start hermes
+  spin "Starting hermes (first start pulls the image — may take a while)" systemctl --user start hermes
   ok "hermes started"
 fi
 
@@ -178,7 +205,7 @@ fi
 # Inside the container the dashboard must bind 0.0.0.0 for the port publish
 # to work, and hermes refuses non-loopback binds without an auth provider —
 # so without this step port 9119 never opens.
-info "Checking dashboard auth"
+step "Dashboard auth"
 
 # config.yaml inside the container belongs to the remapped hermes user, and
 # the default exec user may not be able to write it — exec as the file owner.
@@ -219,6 +246,7 @@ fi
 
 # --- 6. Host wrapper for the container CLI ----------------------------------
 # Lets you type `hermes` on the host and get the CLI inside the container.
+step "Host CLI wrapper"
 WRAPPER="$HOME/.local/bin/hermes"
 
 DESIRED_WRAPPER=$(cat <<'EOF'
@@ -239,7 +267,7 @@ fi
 
 # --- 7. Host control over SSH (opt-in: --host-control) ----------------------
 if [ "$HOST_CONTROL" = 1 ]; then
-  info "Configuring host control (terminal backend: ssh -> this host)"
+  step "Host control (SSH backend + sudo)"
 
   systemctl is-active --quiet sshd || systemctl is-active --quiet ssh 2>/dev/null \
     || fail "sshd is not running on the host. Enable it first (e.g. sudo systemctl enable --now sshd)."
@@ -334,15 +362,23 @@ PYEOF
 fi
 
 # --- 8. Verification --------------------------------------------------------
-info "Verifying deployment"
+step "Verification"
 
 systemctl --user is-active --quiet hermes || fail "hermes service is not active. Check: podman logs hermes"
 
 HEALTH_OK=0
-for _ in $(seq 1 30); do
+HEALTH_TRIES=30
+for i in $(seq 1 "$HEALTH_TRIES"); do
   if curl -sf "$HEALTH_URL" >/dev/null 2>&1; then HEALTH_OK=1; break; fi
+  if [ -t 1 ]; then
+    filled=$((i * 20 / HEALTH_TRIES))
+    bar=$(printf '█%.0s' $(seq 1 "$filled") 2>/dev/null)
+    pad=$(printf '░%.0s' $(seq 1 $((20 - filled))) 2>/dev/null)
+    printf '\r\033[1;35m⏳\033[0m waiting for health endpoint [%s%s] %d/%ds' "$bar" "$pad" $((i * 2)) $((HEALTH_TRIES * 2))
+  fi
   sleep 2
 done
+if [ -t 1 ]; then printf '\r\033[K'; fi
 if [ "$HEALTH_OK" = 1 ]; then
   ok "health endpoint responding: $HEALTH_URL"
 else
