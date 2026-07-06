@@ -17,6 +17,17 @@
 
 set -euo pipefail
 
+# --host-control: configure the agent's terminal backend to run commands on
+# the HOST over SSH (the agent stays sandboxed in the container, but its
+# hands work on the machine). Requires a running sshd on the host.
+HOST_CONTROL=0
+for arg in "$@"; do
+  case "$arg" in
+    --host-control) HOST_CONTROL=1 ;;
+    *) echo "Unknown option: $arg (supported: --host-control)" >&2; exit 2 ;;
+  esac
+done
+
 IMAGE="docker.io/nousresearch/hermes-agent:latest"
 QUADLET_DIR="$HOME/.config/containers/systemd"
 QUADLET_FILE="$QUADLET_DIR/hermes.container"
@@ -176,7 +187,69 @@ else
   ok "hermes wrapper installed: $WRAPPER"
 fi
 
-# --- 7. Verification --------------------------------------------------------
+# --- 7. Host control over SSH (opt-in: --host-control) ----------------------
+if [ "$HOST_CONTROL" = 1 ]; then
+  info "Configuring host control (terminal backend: ssh -> this host)"
+
+  systemctl is-active --quiet sshd || systemctl is-active --quiet ssh 2>/dev/null \
+    || fail "sshd is not running on the host. Enable it first (e.g. sudo systemctl enable --now sshd)."
+
+  SSH_KEY_DIR="$HERMES_DATA/ssh"
+  SSH_KEY="$SSH_KEY_DIR/hermes_host_key"
+  # Key lives under ~/.hermes so it persists across container updates and is
+  # visible inside the container at /opt/data/ssh/.
+  if [ -f "$SSH_KEY" ]; then
+    skip "host-control SSH key already exists"
+  else
+    mkdir -p "$SSH_KEY_DIR"
+    ssh-keygen -t ed25519 -N "" -C "hermes-container-host-control" -f "$SSH_KEY" -q
+    ok "SSH keypair generated: $SSH_KEY"
+  fi
+
+  mkdir -p "$HOME/.ssh" && chmod 700 "$HOME/.ssh"
+  touch "$HOME/.ssh/authorized_keys" && chmod 600 "$HOME/.ssh/authorized_keys"
+  if grep -qf "$SSH_KEY.pub" "$HOME/.ssh/authorized_keys" 2>/dev/null; then
+    skip "public key already authorized on host"
+  else
+    cat "$SSH_KEY.pub" >> "$HOME/.ssh/authorized_keys"
+    ok "public key added to ~/.ssh/authorized_keys"
+  fi
+
+  # host.containers.internal resolves to the host from inside podman containers.
+  podman exec -i -e SSH_USER="$USER" hermes python - <<'PYEOF'
+import os, yaml
+p = "/opt/data/config.yaml"
+with open(p, encoding="utf-8") as f:
+    cfg = yaml.safe_load(f) or {}
+cfg["terminal"] = {
+    "backend": "ssh",
+    "cwd": "~",
+    "timeout": 180,
+    "lifetime_seconds": 300,
+    "ssh_host": "host.containers.internal",
+    "ssh_user": os.environ["SSH_USER"],
+    "ssh_port": 22,
+    "ssh_key": "/opt/data/ssh/hermes_host_key",
+}
+with open(p, "w", encoding="utf-8") as f:
+    yaml.safe_dump(cfg, f, sort_keys=False, allow_unicode=True)
+PYEOF
+  systemctl --user restart hermes
+  ok "terminal backend set to ssh -> $USER@host (restarted)"
+
+  # Connection test from inside the container (accept-new primes known_hosts).
+  sleep 3
+  if podman exec hermes ssh -i /opt/data/ssh/hermes_host_key \
+       -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 \
+       "$USER@host.containers.internal" true 2>/dev/null; then
+    ok "container -> host SSH connection verified"
+  else
+    echo "WARN: SSH test from container to host failed. Check sshd config" >&2
+    echo "      (PubkeyAuthentication, AllowUsers) and firewall on port 22." >&2
+  fi
+fi
+
+# --- 8. Verification --------------------------------------------------------
 info "Verifying deployment"
 
 systemctl --user is-active --quiet hermes || fail "hermes service is not active. Check: podman logs hermes"
