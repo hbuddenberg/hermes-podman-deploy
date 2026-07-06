@@ -151,7 +151,26 @@ PYEOF
   echo ""
 fi
 
-# --- 6. Verification --------------------------------------------------------
+# --- 6. Host wrapper for the container CLI ----------------------------------
+# Lets you type `hermes` on the host and get the CLI inside the container.
+WRAPPER="$HOME/.local/bin/hermes"
+
+DESIRED_WRAPPER=$(cat <<'EOF'
+#!/usr/bin/env bash
+# Wrapper: run the hermes CLI inside the podman container.
+exec podman exec -it hermes hermes "$@"
+EOF
+)
+
+if [ -f "$WRAPPER" ] && [ "$(cat "$WRAPPER")" = "$DESIRED_WRAPPER" ]; then
+  skip "hermes wrapper already installed: $WRAPPER"
+else
+  printf '%s\n' "$DESIRED_WRAPPER" > "$WRAPPER"
+  chmod +x "$WRAPPER"
+  ok "hermes wrapper installed: $WRAPPER"
+fi
+
+# --- 7. Verification --------------------------------------------------------
 info "Verifying deployment"
 
 systemctl --user is-active --quiet hermes || fail "hermes service is not active. Check: podman logs hermes"
@@ -189,6 +208,7 @@ else
 fi
 
 info "Done. Useful commands:"
+echo "  hermes                          # interactive CLI (inside the container)"
 echo "  podman auto-update              # update image now"
 echo "  systemctl --user status hermes  # service status"
 echo "  podman logs -f hermes           # follow logs"
