@@ -135,7 +135,11 @@ fi
 # so without this step port 9119 never opens.
 info "Checking dashboard auth"
 
-HAS_AUTH=$(podman exec hermes python -c 'import yaml
+# config.yaml inside the container belongs to the remapped hermes user, and
+# the default exec user may not be able to write it — exec as the file owner.
+CFG_OWNER=$(podman exec hermes stat -c '%u:%g' /opt/data/config.yaml)
+
+HAS_AUTH=$(podman exec -u "$CFG_OWNER" hermes python -c 'import yaml
 cfg = yaml.safe_load(open("/opt/data/config.yaml", encoding="utf-8")) or {}
 print("yes" if cfg.get("dashboard", {}).get("basic_auth", {}).get("password_hash") else "no")' 2>/dev/null || echo "no")
 
@@ -146,7 +150,7 @@ else
   DASH_PASS=$(openssl rand -base64 15)
   DASH_HASH=$(podman exec hermes python -c "from plugins.dashboard_auth.basic import hash_password; print(hash_password('$DASH_PASS'))")
   # NOTE: podman exec needs -i for stdin (heredoc) to reach the process.
-  podman exec -i -e DASH_USER="$DASH_USER" -e DASH_HASH="$DASH_HASH" hermes python - <<'PYEOF'
+  podman exec -i -u "$CFG_OWNER" -e DASH_USER="$DASH_USER" -e DASH_HASH="$DASH_HASH" hermes python - <<'PYEOF'
 import os, yaml
 p = "/opt/data/config.yaml"
 with open(p, encoding="utf-8") as f:
@@ -216,7 +220,8 @@ if [ "$HOST_CONTROL" = 1 ]; then
   fi
 
   # host.containers.internal resolves to the host from inside podman containers.
-  podman exec -i -e SSH_USER="$USER" hermes python - <<'PYEOF'
+  CFG_OWNER=${CFG_OWNER:-$(podman exec hermes stat -c '%u:%g' /opt/data/config.yaml)}
+  podman exec -i -u "$CFG_OWNER" -e SSH_USER="$USER" hermes python - <<'PYEOF'
 import os, yaml
 p = "/opt/data/config.yaml"
 with open(p, encoding="utf-8") as f:
