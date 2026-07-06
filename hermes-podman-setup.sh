@@ -21,10 +21,12 @@ set -euo pipefail
 # the HOST over SSH (the agent stays sandboxed in the container, but its
 # hands work on the machine). Requires a running sshd on the host.
 HOST_CONTROL=0
+UNINSTALL=0
 for arg in "$@"; do
   case "$arg" in
     --host-control) HOST_CONTROL=1 ;;
-    *) echo "Unknown option: $arg (supported: --host-control)" >&2; exit 2 ;;
+    --uninstall) UNINSTALL=1 ;;
+    *) echo "Unknown option: $arg (supported: --host-control, --uninstall)" >&2; exit 2 ;;
   esac
 done
 
@@ -38,6 +40,32 @@ info()  { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 ok()    { printf '\033[1;32m OK\033[0m %s\n' "$*"; }
 skip()  { printf '\033[1;33mSKIP\033[0m %s\n' "$*"; }
 fail()  { printf '\033[1;31mFAIL\033[0m %s\n' "$*" >&2; exit 1; }
+
+# --- Uninstall --------------------------------------------------------------
+if [ "$UNINSTALL" = 1 ]; then
+  info "Uninstalling hermes deployment"
+  systemctl --user stop hermes 2>/dev/null || true
+  rm -f "$QUADLET_FILE" && ok "Quadlet removed"
+  systemctl --user daemon-reload
+  podman rm -f hermes >/dev/null 2>&1 || true
+  if podman rmi "$IMAGE" >/dev/null 2>&1; then ok "image removed"; else skip "image already absent"; fi
+  rm -f "$HOME/.local/bin/hermes" && ok "hermes wrapper removed"
+  rm -f "$HOME/.ssh/authorized_keys.hermes-bak"
+  # Remove only the host-control key from authorized_keys, if present.
+  if [ -f "$HERMES_DATA/ssh/hermes_host_key.pub" ] && [ -f "$HOME/.ssh/authorized_keys" ]; then
+    grep -vF "$(cat "$HERMES_DATA/ssh/hermes_host_key.pub")" "$HOME/.ssh/authorized_keys" \
+      > "$HOME/.ssh/authorized_keys.tmp" && mv "$HOME/.ssh/authorized_keys.tmp" "$HOME/.ssh/authorized_keys"
+    ok "host-control key removed from authorized_keys"
+  fi
+  sudo rm -f /etc/sudoers.d/hermes 2>/dev/null && ok "sudoers rule removed" || true
+  echo ""
+  echo "NOT removed (your data): $HERMES_DATA"
+  echo "  Full wipe (API keys, memory, skills — irreversible):"
+  echo "    podman unshare rm -rf $HERMES_DATA 2>/dev/null || rm -rf $HERMES_DATA"
+  echo "  podman-auto-update.timer left enabled (harmless; disable with:"
+  echo "    systemctl --user disable --now podman-auto-update.timer)"
+  exit 0
+fi
 
 # --- 1. Prerequisites ------------------------------------------------------
 info "Checking prerequisites"
