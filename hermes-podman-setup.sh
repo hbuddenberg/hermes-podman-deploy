@@ -73,8 +73,7 @@ if [ -s "$HERMES_DATA/.env" ] || [ -s "$HERMES_DATA/config.yaml" ]; then
 else
   if [ -t 0 ]; then
     info "No config found — running the interactive setup wizard"
-    podman run -it --rm --userns=keep-id \
-      -e HERMES_UID="$(id -u)" -e HERMES_GID="$(id -g)" \
+    podman run -it --rm --userns=keep-id:uid=10000,gid=10000 --user 0 \
       -v "$HERMES_DATA":/opt/data:Z "$IMAGE" setup
     ok "setup wizard finished"
   else
@@ -97,11 +96,13 @@ Volume=%h/.hermes:/opt/data:Z
 PublishPort=127.0.0.1:8642:8642
 PublishPort=127.0.0.1:9119:9119
 Environment=HERMES_DASHBOARD=1
-# keep-id + HERMES_UID/GID align the container's internal hermes user with
-# the host user, so files in ~/.hermes stay readable on both sides.
-UserNS=keep-id
-Environment=HERMES_UID=%U
-Environment=HERMES_GID=%G
+# Map the host user directly onto the image's internal hermes uid (10000):
+# no HERMES_UID remap needed (the image already ships a uid-1000 user, so
+# usermod-based remapping collides on typical hosts). User=0 lets the s6
+# bootstrap run as container root before dropping to hermes. Files written
+# to /opt/data land owned by the host user on the host side.
+UserNS=keep-id:uid=10000,gid=10000
+User=0
 AutoUpdate=registry
 
 [Service]
