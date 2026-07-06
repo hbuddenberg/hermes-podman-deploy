@@ -59,12 +59,23 @@ fi
 # --- 2. Data dir + interactive setup wizard --------------------------------
 mkdir -p "$HERMES_DATA"
 
+# Repair ownership from earlier runs without keep-id: files created by the
+# container may belong to subuids, making them unreadable on the host.
+if [ -n "$(find "$HERMES_DATA" ! -user "$USER" -print -quit 2>/dev/null)" ] \
+   || ! find "$HERMES_DATA" >/dev/null 2>&1; then
+  info "Repairing ownership of $HERMES_DATA (subuid leftovers)"
+  podman unshare chown -R 0:0 "$HERMES_DATA"
+  ok "ownership repaired"
+fi
+
 if [ -s "$HERMES_DATA/.env" ] || [ -s "$HERMES_DATA/config.yaml" ]; then
   skip "hermes config already present in $HERMES_DATA"
 else
   if [ -t 0 ]; then
     info "No config found — running the interactive setup wizard"
-    podman run -it --rm -v "$HERMES_DATA":/opt/data:Z "$IMAGE" setup
+    podman run -it --rm --userns=keep-id \
+      -e HERMES_UID="$(id -u)" -e HERMES_GID="$(id -g)" \
+      -v "$HERMES_DATA":/opt/data:Z "$IMAGE" setup
     ok "setup wizard finished"
   else
     fail "No TTY and no config in $HERMES_DATA. Run this script from a terminal so the setup wizard can prompt for API keys."
@@ -86,6 +97,11 @@ Volume=%h/.hermes:/opt/data:Z
 PublishPort=127.0.0.1:8642:8642
 PublishPort=127.0.0.1:9119:9119
 Environment=HERMES_DASHBOARD=1
+# keep-id + HERMES_UID/GID align the container's internal hermes user with
+# the host user, so files in ~/.hermes stay readable on both sides.
+UserNS=keep-id
+Environment=HERMES_UID=%U
+Environment=HERMES_GID=%G
 AutoUpdate=registry
 
 [Service]
