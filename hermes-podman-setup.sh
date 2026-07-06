@@ -423,14 +423,17 @@ echo "  hermes                          # interactive CLI (inside the container)
 echo "  podman auto-update              # update image now"
 echo "  systemctl --user status hermes  # service status"
 echo "  podman logs -f hermes           # follow logs"
-echo "  Dashboard (local):     http://127.0.0.1:9119"
+# Point at /login directly: with a single basic-auth provider the root URL
+# auto-redirects into the OAuth flow and 500s (upstream bug — basic is
+# password-only). /login renders the password form and works.
+echo "  Dashboard (local):     http://127.0.0.1:9119/login"
 LAN_IP=$(ip -4 route get 1.1.1.1 2>/dev/null | grep -oP 'src \K[0-9.]+' || true)
 if [ -n "$LAN_IP" ]; then
-  echo "  Dashboard (LAN):       http://$LAN_IP:9119"
+  echo "  Dashboard (LAN):       http://$LAN_IP:9119/login"
 fi
 if command -v tailscale >/dev/null 2>&1; then
   TS_IP=$(tailscale ip -4 2>/dev/null | head -1 || true)
   if [ -n "$TS_IP" ]; then
-    echo "  Dashboard (tailscale): http://$TS_IP:9119"
+    echo "  Dashboard (tailscale): http://$TS_IP:9119/login"
   fi
 fi
