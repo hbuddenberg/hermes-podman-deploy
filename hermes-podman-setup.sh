@@ -151,7 +151,9 @@ ContainerName=hermes
 Exec=gateway run
 Volume=%h/.hermes:/opt/data:Z
 PublishPort=127.0.0.1:8642:8642
-PublishPort=127.0.0.1:9119:9119
+# Dashboard on all interfaces (LAN / tailscale): protected by basic auth,
+# which this script configures — hermes refuses non-loopback binds without it.
+PublishPort=9119:9119
 Environment=HERMES_DASHBOARD=1
 # Map the host user directly onto the image's internal hermes uid (10000):
 # no HERMES_UID remap needed (the image already ships a uid-1000 user, so
@@ -392,6 +394,16 @@ else
   echo "WARN: container not listed by 'podman auto-update --dry-run'" >&2
 fi
 
+# Dashboard is published on all interfaces — open the firewall if one is active.
+if command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld 2>/dev/null; then
+  if sudo firewall-cmd --query-port=9119/tcp >/dev/null 2>&1; then
+    skip "firewalld already allows 9119/tcp"
+  else
+    sudo firewall-cmd --add-port=9119/tcp --permanent >/dev/null && sudo firewall-cmd --reload >/dev/null
+    ok "firewalld: opened 9119/tcp for the dashboard"
+  fi
+fi
+
 # Rootless UID mapping check: files created by the container should belong
 # to the host user. If they show up as a high subuid, UserNS=keep-id plus
 # HERMES_UID/HERMES_GID must be added to the Quadlet.
@@ -411,4 +423,14 @@ echo "  hermes                          # interactive CLI (inside the container)
 echo "  podman auto-update              # update image now"
 echo "  systemctl --user status hermes  # service status"
 echo "  podman logs -f hermes           # follow logs"
-echo "  Dashboard: http://127.0.0.1:9119"
+echo "  Dashboard (local):     http://127.0.0.1:9119"
+LAN_IP=$(ip -4 route get 1.1.1.1 2>/dev/null | grep -oP 'src \K[0-9.]+' || true)
+if [ -n "$LAN_IP" ]; then
+  echo "  Dashboard (LAN):       http://$LAN_IP:9119"
+fi
+if command -v tailscale >/dev/null 2>&1; then
+  TS_IP=$(tailscale ip -4 2>/dev/null | head -1 || true)
+  if [ -n "$TS_IP" ]; then
+    echo "  Dashboard (tailscale): http://$TS_IP:9119"
+  fi
+fi
