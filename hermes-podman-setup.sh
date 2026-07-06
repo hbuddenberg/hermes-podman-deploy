@@ -203,6 +203,7 @@ EOF
 if [ -f "$WRAPPER" ] && [ "$(cat "$WRAPPER")" = "$DESIRED_WRAPPER" ]; then
   skip "hermes wrapper already installed: $WRAPPER"
 else
+  mkdir -p "$(dirname "$WRAPPER")"
   printf '%s\n' "$DESIRED_WRAPPER" > "$WRAPPER"
   chmod +x "$WRAPPER"
   ok "hermes wrapper installed: $WRAPPER"
