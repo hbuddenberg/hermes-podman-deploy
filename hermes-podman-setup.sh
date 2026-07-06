@@ -113,7 +113,7 @@ if [ "$UNINSTALL" = 1 ]; then
       > "$HOME/.ssh/authorized_keys.tmp" && mv "$HOME/.ssh/authorized_keys.tmp" "$HOME/.ssh/authorized_keys"
     ok "host-control key removed from authorized_keys"
   fi
-  sudo rm -f /etc/sudoers.d/hermes 2>/dev/null && ok "sudoers rule removed" || true
+  if sudo rm -f /etc/sudoers.d/hermes 2>/dev/null; then ok "sudoers rule removed (if present)"; fi
   echo ""
   echo "NOT removed (your data): $HERMES_DATA"
   echo "  Full wipe (API keys, memory, skills — irreversible):"
