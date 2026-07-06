@@ -112,7 +112,46 @@ else
   ok "podman-auto-update.timer enabled (daily image check with rollback)"
 fi
 
-# --- 5. Verification --------------------------------------------------------
+# --- 5. Dashboard basic auth ------------------------------------------------
+# Inside the container the dashboard must bind 0.0.0.0 for the port publish
+# to work, and hermes refuses non-loopback binds without an auth provider —
+# so without this step port 9119 never opens.
+info "Checking dashboard auth"
+
+HAS_AUTH=$(podman exec hermes python -c 'import yaml
+cfg = yaml.safe_load(open("/opt/data/config.yaml", encoding="utf-8")) or {}
+print("yes" if cfg.get("dashboard", {}).get("basic_auth", {}).get("password_hash") else "no")' 2>/dev/null || echo "no")
+
+if [ "$HAS_AUTH" = "yes" ]; then
+  skip "dashboard basic auth already configured"
+else
+  DASH_USER="$USER"
+  DASH_PASS=$(openssl rand -base64 15)
+  DASH_HASH=$(podman exec hermes python -c "from plugins.dashboard_auth.basic import hash_password; print(hash_password('$DASH_PASS'))")
+  # NOTE: podman exec needs -i for stdin (heredoc) to reach the process.
+  podman exec -i -e DASH_USER="$DASH_USER" -e DASH_HASH="$DASH_HASH" hermes python - <<'PYEOF'
+import os, yaml
+p = "/opt/data/config.yaml"
+with open(p, encoding="utf-8") as f:
+    cfg = yaml.safe_load(f) or {}
+auth = cfg.setdefault("dashboard", {}).setdefault("basic_auth", {})
+auth["username"] = os.environ["DASH_USER"]
+auth["password_hash"] = os.environ["DASH_HASH"]
+with open(p, "w", encoding="utf-8") as f:
+    yaml.safe_dump(cfg, f, sort_keys=False, allow_unicode=True)
+PYEOF
+  systemctl --user restart hermes
+  ok "dashboard basic auth configured (user: $DASH_USER)"
+  echo ""
+  echo "  ============================================================"
+  echo "  Dashboard credentials — SAVE THIS PASSWORD NOW:"
+  echo "    user:     $DASH_USER"
+  echo "    password: $DASH_PASS"
+  echo "  ============================================================"
+  echo ""
+fi
+
+# --- 6. Verification --------------------------------------------------------
 info "Verifying deployment"
 
 systemctl --user is-active --quiet hermes || fail "hermes service is not active. Check: podman logs hermes"
