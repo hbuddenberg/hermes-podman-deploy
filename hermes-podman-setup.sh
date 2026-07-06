@@ -22,11 +22,13 @@ set -euo pipefail
 # hands work on the machine). Requires a running sshd on the host.
 HOST_CONTROL=0
 UNINSTALL=0
+RESET_DASH_PASS=0
 for arg in "$@"; do
   case "$arg" in
     --host-control) HOST_CONTROL=1 ;;
     --uninstall) UNINSTALL=1 ;;
-    *) echo "Unknown option: $arg (supported: --host-control, --uninstall)" >&2; exit 2 ;;
+    --reset-dashboard-password) RESET_DASH_PASS=1 ;;
+    *) echo "Unknown option: $arg (supported: --host-control, --uninstall, --reset-dashboard-password)" >&2; exit 2 ;;
   esac
 done
 
@@ -67,6 +69,33 @@ spin() {
   printf '\r\033[K'
   [ "$rc" -eq 0 ] || { cat "$SPIN_LOG" >&2; return "$rc"; }
 }
+
+# --- Reset dashboard password ------------------------------------------------
+if [ "$RESET_DASH_PASS" = 1 ]; then
+  info "Resetting dashboard password"
+  podman container exists hermes 2>/dev/null || fail "hermes container is not running"
+  DASH_USER="$USER"
+  DASH_PASS=$(openssl rand -base64 15)
+  DASH_HASH=$(podman exec hermes python -c "from plugins.dashboard_auth.basic import hash_password; print(hash_password('$DASH_PASS'))")
+  podman exec -i -e DASH_USER="$DASH_USER" -e DASH_HASH="$DASH_HASH" hermes python - <<'PYEOF'
+import os, yaml
+p = "/opt/data/config.yaml"
+with open(p, encoding="utf-8") as f:
+    cfg = yaml.safe_load(f) or {}
+auth = cfg.setdefault("dashboard", {}).setdefault("basic_auth", {})
+auth["username"] = os.environ["DASH_USER"]
+auth["password_hash"] = os.environ["DASH_HASH"]
+with open(p, "w", encoding="utf-8") as f:
+    yaml.safe_dump(cfg, f, sort_keys=False, allow_unicode=True)
+PYEOF
+  systemctl --user restart hermes
+  ok "dashboard password reset"
+  echo ""
+  echo "  user:     $DASH_USER"
+  echo "  password: $DASH_PASS"
+  echo ""
+  exit 0
+fi
 
 # --- Uninstall --------------------------------------------------------------
 if [ "$UNINSTALL" = 1 ]; then
