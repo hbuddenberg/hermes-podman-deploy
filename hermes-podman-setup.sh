@@ -247,6 +247,39 @@ PYEOF
     echo "WARN: SSH test from container to host failed. Check sshd config" >&2
     echo "      (PubkeyAuthentication, AllowUsers) and firewall on port 22." >&2
   fi
+
+  # Sudo check: hermes operates over SSH as $USER, so root tasks
+  # (rpm-ostree, systemctl) need passwordless sudo. On uCore/CoreOS the
+  # `core` user already has NOPASSWD by default.
+  info "Checking passwordless sudo for $USER"
+  if sudo -n true 2>/dev/null; then
+    ok "passwordless sudo available — hermes can run root tasks on the host"
+  elif [ -t 0 ]; then
+    echo "Passwordless sudo is NOT configured for $USER."
+    echo "Without it, hermes cannot run root tasks (rpm-ostree, systemctl, ...)."
+    printf "Create /etc/sudoers.d/hermes with 'NOPASSWD: ALL' for %s? [y/N] " "$USER"
+    read -r REPLY
+    if [ "$REPLY" = "y" ] || [ "$REPLY" = "Y" ]; then
+      SUDOERS_RULE="$USER ALL=(ALL) NOPASSWD: ALL"
+      TMP_SUDOERS=$(mktemp)
+      printf '%s\n' "$SUDOERS_RULE" > "$TMP_SUDOERS"
+      if visudo -c -f "$TMP_SUDOERS" >/dev/null 2>&1; then
+        sudo install -m 0440 "$TMP_SUDOERS" /etc/sudoers.d/hermes
+        rm -f "$TMP_SUDOERS"
+        sudo -n true 2>/dev/null && ok "sudoers rule installed and verified" \
+          || echo "WARN: rule installed but 'sudo -n' still fails — check sudoers order" >&2
+      else
+        rm -f "$TMP_SUDOERS"
+        fail "generated sudoers rule failed visudo validation — aborting for safety"
+      fi
+    else
+      skip "sudo left as-is — hermes will be limited to non-root tasks on the host"
+    fi
+  else
+    echo "WARN: no passwordless sudo and no TTY to ask. Root tasks won't work" >&2
+    echo "      until you add a sudoers rule, e.g.:" >&2
+    echo "        echo '$USER ALL=(ALL) NOPASSWD: ALL' | sudo tee /etc/sudoers.d/hermes" >&2
+  fi
 fi
 
 # --- 8. Verification --------------------------------------------------------
