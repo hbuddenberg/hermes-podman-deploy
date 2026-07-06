@@ -53,7 +53,7 @@ if [ -s "$HERMES_DATA/.env" ] || [ -s "$HERMES_DATA/config.yaml" ]; then
 else
   if [ -t 0 ]; then
     info "No config found — running the interactive setup wizard"
-    podman run -it --rm -v "$HERMES_DATA":/opt/data "$IMAGE" setup
+    podman run -it --rm -v "$HERMES_DATA":/opt/data:Z "$IMAGE" setup
     ok "setup wizard finished"
   else
     fail "No TTY and no config in $HERMES_DATA. Run this script from a terminal so the setup wizard can prompt for API keys."
@@ -71,7 +71,7 @@ Description=Hermes Agent gateway
 Image=docker.io/nousresearch/hermes-agent:latest
 ContainerName=hermes
 Exec=gateway run
-Volume=%h/.hermes:/opt/data
+Volume=%h/.hermes:/opt/data:Z
 PublishPort=127.0.0.1:8642:8642
 PublishPort=127.0.0.1:9119:9119
 Environment=HERMES_DASHBOARD=1
@@ -86,10 +86,12 @@ WantedBy=default.target
 EOF
 )
 
+QUADLET_CHANGED=0
 if [ -f "$QUADLET_FILE" ] && [ "$(cat "$QUADLET_FILE")" = "$DESIRED_QUADLET" ]; then
   skip "Quadlet already up to date: $QUADLET_FILE"
 else
   printf '%s\n' "$DESIRED_QUADLET" > "$QUADLET_FILE"
+  QUADLET_CHANGED=1
   ok "Quadlet written: $QUADLET_FILE"
 fi
 
@@ -97,8 +99,12 @@ fi
 info "Reloading systemd user units"
 systemctl --user daemon-reload
 
-if systemctl --user is-active --quiet hermes; then
+if systemctl --user is-active --quiet hermes && [ "$QUADLET_CHANGED" = 0 ]; then
   skip "hermes service already running"
+elif systemctl --user is-active --quiet hermes; then
+  info "Quadlet changed — restarting hermes to apply it"
+  systemctl --user restart hermes
+  ok "hermes restarted"
 else
   info "Starting hermes (first start pulls the image — may take a while)"
   systemctl --user start hermes
