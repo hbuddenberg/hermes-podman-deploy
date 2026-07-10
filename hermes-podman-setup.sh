@@ -179,6 +179,7 @@ Image=docker.io/nousresearch/hermes-agent:latest
 ContainerName=hermes
 Exec=gateway run
 Volume=%h/.hermes:/opt/data:Z
+Volume=%h/developments:%h/developments:z
 PublishPort=127.0.0.1:8642:8642
 # Dashboard on all interfaces (LAN / tailscale): protected by basic auth,
 # which this script configures — hermes refuses non-loopback binds without it.
@@ -344,6 +345,10 @@ cfg["terminal"] = {
 with open(p, "w", encoding="utf-8") as f:
     yaml.safe_dump(cfg, f, sort_keys=False, allow_unicode=True)
 PYEOF
+  # Stale .env overrides (TERMINAL_ENV / TERMINAL_SSH_*) take precedence over
+  # config.yaml keys that are absent and can silently force the local backend.
+  ENV_OWNER=$(podman exec hermes stat -c "%u" /opt/data/.env 2>/dev/null || echo "$CFG_OWNER")
+  podman exec -u "$ENV_OWNER" hermes sed -i "/^TERMINAL_ENV=/d; /^TERMINAL_SSH_/d" /opt/data/.env 2>/dev/null || true
   systemctl --user restart hermes
   ok "terminal backend set to ssh -> $USER@host (restarted)"
 
